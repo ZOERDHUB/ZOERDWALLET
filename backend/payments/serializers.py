@@ -1,0 +1,113 @@
+from rest_framework import serializers
+from drf_spectacular.utils import extend_schema_field
+
+@extend_schema_field({"type": "string", "enum": ["provisioning", "awaiting_payment", "expired"]})
+class PaymentStatusField(serializers.ReadOnlyField):
+    pass
+
+from .models import Credential, PaymentRequest, SendRequest
+
+class CredentialsInput(serializers.Serializer):
+    email = serializers.EmailField(max_length=150)
+    password = serializers.CharField(write_only=True, trim_whitespace=False, max_length=1024)
+
+class LoginSecretInput(serializers.Serializer):
+    login_key = serializers.CharField(min_length=32, max_length=256, trim_whitespace=False)
+
+class RecoveryEmailInput(serializers.Serializer):
+    email = serializers.EmailField(max_length=150)
+
+class SignedTokenInput(serializers.Serializer):
+    token = serializers.CharField(max_length=2048)
+
+class ResetSecretInput(SignedTokenInput):
+    pass
+
+class KeyInput(serializers.Serializer):
+    name = serializers.CharField(max_length=80)
+
+class KeyOutput(serializers.ModelSerializer):
+    class Meta:
+        model = Credential
+        fields = ["id", "name", "prefix", "created_at", "revoked_at"]
+
+class PaymentInput(serializers.Serializer):
+    reference = serializers.CharField(max_length=128)
+    # Accept integer strings only. Never accept floats for monetary values.
+    amount_zatoshis = serializers.RegexField(r"^[1-9][0-9]{0,15}$")
+    ttl_seconds = serializers.IntegerField(min_value=60, max_value=1800, default=1800)
+
+    def validate_amount_zatoshis(self, value):
+        amount = int(value)
+        if amount > 2100000000000000:
+            raise serializers.ValidationError("Amount exceeds the Zcash monetary range.")
+        return amount
+
+class PaymentOutput(serializers.ModelSerializer):
+    received_zatoshis = serializers.SerializerMethodField()
+    funding_status = serializers.SerializerMethodField()
+    amount_zatoshis = serializers.SerializerMethodField()
+    status = PaymentStatusField()
+    class Meta:
+        model = PaymentRequest
+        fields = ["id", "reference", "amount_zatoshis", "address", "status", "created_at", "expires_at", "received_zatoshis", "funding_status"]
+    def get_received_zatoshis(self, obj) -> str:
+        from django.db.models import Sum
+        if hasattr(obj, "received_total"):
+            return str(obj.received_total or 0)
+        if not hasattr(obj, "_received_total"):
+            obj._received_total = obj.deposits.filter(active=True).aggregate(total=Sum("amount_zatoshis"))["total"] or 0
+        return str(obj._received_total)
+    def get_funding_status(self, obj) -> str:
+        received = int(self.get_received_zatoshis(obj))
+        if not received:
+            return "unpaid"
+        if received < obj.amount_zatoshis:
+            return "partially_paid"
+        return "paid" if received == obj.amount_zatoshis else "overpaid"
+    def get_amount_zatoshis(self, obj) -> str:
+        return str(obj.amount_zatoshis)
+
+class SendInput(serializers.Serializer):
+    recipient_address = serializers.CharField(max_length=1024)
+    amount_zatoshis = serializers.RegexField(r"^[1-9][0-9]{0,15}$")
+    memo = serializers.CharField(required=False, allow_blank=True, max_length=512)
+
+    def validate_recipient_address(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("Recipient address is required.")
+        return value
+
+    def validate_amount_zatoshis(self, value):
+        amount = int(value)
+        if amount > 2100000000000000:
+            raise serializers.ValidationError("Amount exceeds the Zcash monetary range.")
+        return amount
+
+    def validate_memo(self, value):
+        if len(value.encode("utf-8")) > 512:
+            raise serializers.ValidationError("Memo exceeds the 512-byte Zcash memo limit.")
+        return value
+
+
+class SendOutput(serializers.ModelSerializer):
+    amount_zatoshis = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SendRequest
+        fields = [
+            "id",
+            "recipient_address",
+            "amount_zatoshis",
+            "memo",
+            "status",
+            "txids",
+            "error",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_amount_zatoshis(self, obj) -> str:
+        return str(obj.amount_zatoshis)
+

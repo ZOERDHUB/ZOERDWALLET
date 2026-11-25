@@ -1,0 +1,230 @@
+import { API_ORIGIN, ApiError, apiRequest } from "./client";
+import type { CreatePaymentPayload } from "../payments/idempotency";
+import type {
+  IssuedKey,
+  KeyMetadata,
+  Paginated,
+  PaymentRequest,
+  SendRequest,
+  SessionResponse,
+  WalletBalance,
+  WalletActivity,
+} from "./types";
+
+export interface Credentials {
+  login_key: string;
+}
+
+function requireSession(response: SessionResponse | undefined): SessionResponse {
+  if (!response) {
+    throw new ApiError({
+      status: 204,
+      detail: "Invalid API response. Please try again.",
+    });
+  }
+
+  return response;
+}
+
+export async function login(
+  credentials: Credentials,
+  signal?: AbortSignal,
+): Promise<SessionResponse> {
+  const response = await apiRequest<SessionResponse>("/api/v1/auth/login/", {
+    method: "POST",
+    body: JSON.stringify(credentials),
+    signal,
+  });
+  return requireSession(response);
+}
+
+export async function register(
+  _credentials: Credentials,
+  signal?: AbortSignal,
+): Promise<SessionResponse> {
+  const response = await apiRequest<SessionResponse>("/api/v1/auth/register/", {
+    method: "POST",
+    body: JSON.stringify({}),
+    signal,
+  });
+  return requireSession(response);
+}
+
+export async function migrateLegacy(email: string, password: string): Promise<SessionResponse> {
+  return requireSession(await apiRequest<SessionResponse>("/api/v1/auth/migrate/", {
+    method: "POST", body: JSON.stringify({ email, password }),
+  }));
+}
+
+export async function confirmMigration(login_key: string): Promise<SessionResponse> {
+  return requireSession(await apiRequest<SessionResponse>("/api/v1/auth/confirm-migrate/", {
+    method:"POST", body:JSON.stringify({login_key}),
+  }));
+}
+
+export async function activateLoginKey(): Promise<{login_key: string}> {
+  const response = await apiRequest<{login_key: string}>("/api/v1/auth/activate-key/", { method: "POST" });
+  if (!response) throw new Error("Unable to activate login key");
+  return response;
+}
+
+export async function setRecoveryEmail(email: string, login_key: string): Promise<void> {
+  await apiRequest("/api/v1/auth/recovery-email/", {method:"POST",body:JSON.stringify({email,login_key})});
+}
+export async function verifyRecoveryEmail(token: string): Promise<void> {
+  await apiRequest("/api/v1/auth/verify-email/", {method:"POST",body:JSON.stringify({token})});
+}
+export async function requestRecovery(email: string): Promise<void> {
+  await apiRequest("/api/v1/auth/request-recovery/", {method:"POST",body:JSON.stringify({email})});
+}
+export async function completeRecovery(uid: string, token: string): Promise<SessionResponse> {
+  return requireSession(await apiRequest<SessionResponse>("/api/v1/auth/complete-recovery/", {method:"POST",body:JSON.stringify({uid,token})}));
+}
+
+export async function logout(): Promise<void> {
+  await apiRequest("/api/v1/auth/logout/", { method: "POST" });
+}
+
+export async function getWalletBalance(signal?: AbortSignal): Promise<WalletBalance> {
+  const response = await apiRequest<WalletBalance>("/api/v1/balance/", { signal });
+  if (!response) {
+    throw new ApiError({ status: 204, detail: "Invalid API response. Please try again." });
+  }
+  return response;
+}
+
+export async function getRecentTransactions(signal?: AbortSignal): Promise<Paginated<WalletActivity>> {
+  return getTransactions("/api/v1/transactions/", signal);
+}
+
+function paginationPath(pageUrl: string, expectedPath: string): string {
+  let resolved: URL;
+  try {
+    resolved = new URL(pageUrl, `${API_ORIGIN}/`);
+  } catch {
+    throw new ApiError({ status: 0, detail: "Invalid pagination URL." });
+  }
+
+  if (
+    resolved.origin !== new URL(API_ORIGIN).origin ||
+    resolved.pathname !== expectedPath ||
+    resolved.username ||
+    resolved.password ||
+    resolved.hash
+  ) {
+    throw new ApiError({ status: 0, detail: "Invalid pagination URL." });
+  }
+
+  return `${resolved.pathname}${resolved.search}`;
+}
+
+export async function getTransactions(
+  pageUrl = "/api/v1/transactions/",
+  signal?: AbortSignal,
+): Promise<Paginated<WalletActivity>> {
+  const response = await apiRequest<Paginated<WalletActivity>>(paginationPath(pageUrl, "/api/v1/transactions/"), {
+    signal,
+  });
+  if (!response) {
+    throw new ApiError({ status: 204, detail: "Invalid API response. Please try again." });
+  }
+  if (!Array.isArray(response.results)) {
+    throw new ApiError({ status: 502, detail: "The transaction service returned an unexpected response. The backend may need updating." });
+  }
+  return response;
+}
+
+export async function getApiKeys(signal?: AbortSignal): Promise<KeyMetadata[]> {
+  const response = await apiRequest<KeyMetadata[]>("/api/v1/keys/", { signal });
+  if (!response) {
+    throw new ApiError({ status: 204, detail: "Invalid API response. Please try again." });
+  }
+  return response.map(({ id, name, prefix, created_at, revoked_at }) => ({
+    id,
+    name,
+    prefix,
+    created_at,
+    revoked_at,
+  }));
+}
+
+export async function createApiKey(name: string, signal?: AbortSignal): Promise<IssuedKey> {
+  const response = await apiRequest<IssuedKey>("/api/v1/keys/", {
+    method: "POST",
+    body: JSON.stringify({ name }),
+    signal,
+  });
+  if (!response) {
+    throw new ApiError({ status: 204, detail: "Invalid API response. Please try again." });
+  }
+  return response;
+}
+
+export async function revokeApiKey(id: string, signal?: AbortSignal): Promise<void> {
+  await apiRequest(`/api/v1/keys/${encodeURIComponent(id)}/`, {
+    method: "DELETE",
+    signal,
+  });
+}
+
+export async function getPayments(pageUrl = "/api/v1/payment-requests/", signal?: AbortSignal): Promise<Paginated<PaymentRequest>> {
+  const response = await apiRequest<Paginated<PaymentRequest>>(paginationPath(pageUrl, "/api/v1/payment-requests/"), {
+    signal,
+  });
+  if (!response) {
+    throw new ApiError({ status: 204, detail: "Invalid API response. Please try again." });
+  }
+  return response;
+}
+
+export async function getPayment(id: string, signal?: AbortSignal): Promise<PaymentRequest> {
+  const response = await apiRequest<PaymentRequest>(
+    `/api/v1/payment-requests/${encodeURIComponent(id)}/`,
+    { signal },
+  );
+  if (!response) {
+    throw new ApiError({ status: 204, detail: "Invalid API response. Please try again." });
+  }
+  return response;
+}
+
+export async function createPayment(
+  payload: Readonly<CreatePaymentPayload>,
+  idempotencyKey: string,
+  signal?: AbortSignal,
+): Promise<PaymentRequest> {
+  const response = await apiRequest<PaymentRequest>("/api/v1/payment-requests/", {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(payload),
+    signal,
+  });
+  if (!response) {
+    throw new ApiError({ status: 204, detail: "Invalid API response. Please try again." });
+  }
+  return response;
+}
+
+
+export interface SendZecPayload {
+  recipient_address: string;
+  amount_zatoshis: string;
+  memo?: string;
+}
+
+export async function sendZec(
+  payload: Readonly<SendZecPayload>,
+  idempotencyKey: string,
+  signal?: AbortSignal,
+): Promise<SendRequest> {
+  const response = await apiRequest<SendRequest>("/api/v1/sends/", {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(payload),
+    signal,
+  });
+  if (!response) {
+    throw new ApiError({ status: 204, detail: "Invalid API response. Please try again." });
+  }
+  return response;
+}

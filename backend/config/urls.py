@@ -1,0 +1,30 @@
+from django.contrib import admin
+from django.urls import path
+from payments import views
+from payments.export import ExportTransactions
+from payments.ledger import Balance, Transactions
+from payments.docs import documentation_home  # Registers endpoint schema annotations.
+urlpatterns = [
+    path("admin/", admin.site.urls),
+    path("api/v1/balance/", Balance.as_view()),
+    path("api/v1/transactions/", Transactions.as_view()),
+    path("api/v1/transactions/export/", ExportTransactions.as_view()),
+    path("", documentation_home, name="api-docs"),
+    path("health/", views.Health.as_view()),
+    path("api/v1/auth/register/", views.Register.as_view()),
+    path("api/v1/auth/login/", views.Login.as_view()),
+    path("api/v1/auth/logout/", views.Logout.as_view()),
+    path("api/v1/auth/legacy-login/", views.LegacyLogin.as_view()),
+    path("api/v1/auth/migrate/", views.LegacyMigrate.as_view()),
+    path("api/v1/auth/confirm-migrate/", views.ConfirmLegacyMigrate.as_view()),
+    path("api/v1/auth/activate-key/", views.ActivateLoginSecret.as_view()),
+    path("api/v1/auth/recovery-email/", views.SetRecoveryEmail.as_view()),
+    path("api/v1/auth/verify-email/", views.VerifyRecoveryEmail.as_view()),
+    path("api/v1/auth/request-recovery/", views.RequestRecovery.as_view()),
+    path("api/v1/auth/complete-recovery/", views.CompleteRecovery.as_view()),
+    path("api/v1/keys/", views.Keys.as_view()),
+    path("api/v1/keys/<uuid:pk>/", views.RevokeKey.as_view()),
+    path("api/v1/payment-requests/", views.Payments.as_view()),
+    path("api/v1/sends/", views.Sends.as_view()),
+    path("api/v1/payment-requests/<uuid:pk>/", views.PaymentDetail.as_view()),
+]
